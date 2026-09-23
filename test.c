@@ -108,7 +108,7 @@ static file_data make_test_vgm(void) {
     return file;
 }
 
-static file_data make_gain_test_vgm(uint16_t gain) {
+static file_data make_volume_metadata_test_vgm(uint16_t gain) {
     file_data file = make_test_vgm();
     uint32_t command_size = file.size - 0x80;
     uint32_t old_loop = read_le32(file.data + 0x1C) + 0x1C;
@@ -335,35 +335,65 @@ static void test_fm_latch_conversion(void) {
     buffer_free(&baseline);
 }
 
-static void test_ssg_gain_conversion(void) {
-    file_data file = make_gain_test_vgm(0x819A);
-    qlvgm_error error = { { 0 } };
-    vgm_song song;
-    bool parsed = vgm_parse(file.data, file.size, &song, &error);
-    check(parsed && song.ssg_gain == 0x00CD, "paired YM2203 SSG gain is parsed");
-    converted_song converted;
-    bool converted_ok = parsed && vgm_convert(&song, 50, true, &converted, &error);
-    bool gain_written = false;
-    if (converted_ok) {
-        uint32_t count = (uint32_t)converted.stream.data[0] << 8 | converted.stream.data[1];
-        for (uint32_t i = 0; i + 1 < count; i += 1) {
-            uint32_t at = 2 + i * 2;
-            if (
-                converted.stream.data[at] == VGM_SSG_GAIN_HIGH_REGISTER &&
-                converted.stream.data[at + 1] == 0 &&
-                converted.stream.data[at + 2] == VGM_SSG_GAIN_LOW_REGISTER &&
-                converted.stream.data[at + 3] == 0xCD
-            ) {
-                gain_written = true;
-            }
+static void test_chip_volume_metadata_ignored(void) {
+    const uint16_t gains[] = { 0x8200, 0x819A };
+    const char *descriptions[] = {
+        "relative unity chip-volume metadata is ignored",
+        "relative fractional chip-volume metadata is ignored"
+    };
+    for (uint32_t i = 0; i < sizeof gains / sizeof gains[0]; i += 1) {
+        file_data plain_file = make_test_vgm();
+        file_data metadata_file = make_volume_metadata_test_vgm(gains[i]);
+        qlvgm_error plain_error = { { 0 } };
+        qlvgm_error metadata_error = { { 0 } };
+        vgm_song plain_song;
+        vgm_song metadata_song;
+        bool plain_parsed = vgm_parse(plain_file.data, plain_file.size, &plain_song, &plain_error);
+        bool metadata_parsed = vgm_parse(
+            metadata_file.data,
+            metadata_file.size,
+            &metadata_song,
+            &metadata_error
+        );
+        converted_song plain_converted;
+        converted_song metadata_converted;
+        bool plain_ok = plain_parsed && vgm_convert(
+            &plain_song,
+            50,
+            true,
+            &plain_converted,
+            &plain_error
+        );
+        bool metadata_ok = metadata_parsed && vgm_convert(
+            &metadata_song,
+            50,
+            true,
+            &metadata_converted,
+            &metadata_error
+        );
+        bool same = plain_ok && metadata_ok &&
+            plain_converted.loop_offset == metadata_converted.loop_offset &&
+            plain_converted.frame_count == metadata_converted.frame_count &&
+            plain_converted.loop_frame_count == metadata_converted.loop_frame_count &&
+            plain_converted.clipped_values == metadata_converted.clipped_values &&
+            plain_converted.stream.size == metadata_converted.stream.size &&
+            memcmp(
+                plain_converted.stream.data,
+                metadata_converted.stream.data,
+                plain_converted.stream.size
+            ) == 0;
+        check(same, descriptions[i]);
+        if (plain_ok) {
+            converted_song_free(&plain_converted);
         }
+        if (metadata_ok) {
+            converted_song_free(&metadata_converted);
+        }
+        vgm_song_free(&plain_song);
+        vgm_song_free(&metadata_song);
+        free(plain_file.data);
+        free(metadata_file.data);
     }
-    check(gain_written, "paired SSG gain is emitted through the QSound2 extension");
-    if (converted_ok) {
-        converted_song_free(&converted);
-    }
-    vgm_song_free(&song);
-    free(file.data);
 }
 
 static void test_qlz_round_trip(void) {
@@ -759,7 +789,7 @@ static void test_qlay_output(void) {
 int main(void) {
     test_vgm_conversion();
     test_fm_latch_conversion();
-    test_ssg_gain_conversion();
+    test_chip_volume_metadata_ignored();
     test_qlz_round_trip();
     test_qlz_format();
     test_clock_and_rate_validation();

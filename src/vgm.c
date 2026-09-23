@@ -1,10 +1,7 @@
 enum {
     VGM_TARGET_CLOCK = 2000000,
     VGM_FIXTURE_CLOCK = 3993600,
-    VGM_NO_LOOP = UINT32_MAX,
-    VGM_DEFAULT_SSG_GAIN = 0x0080,
-    VGM_SSG_GAIN_HIGH_REGISTER = 0xF1,
-    VGM_SSG_GAIN_LOW_REGISTER = 0xF0
+    VGM_NO_LOOP = UINT32_MAX
 };
 
 typedef struct {
@@ -21,7 +18,6 @@ typedef struct {
     uint32_t loop_sample;
     uint32_t loop_write;
     uint32_t clock_hz;
-    uint16_t ssg_gain;
     bool has_loop;
 } vgm_song;
 
@@ -88,7 +84,6 @@ static bool vgm_add_samples(uint64_t *samples, uint32_t amount, qlvgm_error *err
 
 static bool vgm_parse(const uint8_t *data, uint32_t size, vgm_song *song, qlvgm_error *error) {
     memset(song, 0, sizeof(*song));
-    song->ssg_gain = VGM_DEFAULT_SSG_GAIN;
     if (size < 0x48 || memcmp(data, "Vgm ", 4) != 0) {
         error_set(error, "input is not a supported VGM file");
         return false;
@@ -130,51 +125,6 @@ static bool vgm_parse(const uint8_t *data, uint32_t size, vgm_song *song, qlvgm_
         return false;
     }
     song->clock_hz = clock;
-
-    if (version >= 0x170 && data_offset >= 0xC0) {
-        uint32_t extra_relative = read_le32(data + 0xBC);
-        if (extra_relative != 0) {
-            uint64_t extra64 = (uint64_t)0xBC + extra_relative;
-            if (extra64 + 12 > data_offset) {
-                error_set(error, "invalid VGM extra header");
-                return false;
-            }
-            uint32_t extra = (uint32_t)extra64;
-            uint32_t extra_length = read_le32(data + extra);
-            if (extra_length >= 12) {
-                uint32_t volume_relative = read_le32(data + extra + 8);
-                if (volume_relative != 0) {
-                    uint64_t volume64 = (uint64_t)extra + 8 + volume_relative;
-                    if (volume64 >= data_offset) {
-                        error_set(error, "invalid VGM chip-volume header");
-                        return false;
-                    }
-                    uint32_t volume = (uint32_t)volume64;
-                    uint32_t count = data[volume];
-                    if ((uint64_t)volume + 1 + (uint64_t)count * 4 > data_offset) {
-                        error_set(error, "truncated VGM chip-volume header");
-                        return false;
-                    }
-                    for (uint32_t i = 0; i < count; i += 1) {
-                        uint32_t at = volume + 1 + i * 4;
-                        uint8_t type = data[at];
-                        uint8_t flags = data[at + 1];
-                        uint16_t gain = read_le16(data + at + 2);
-                        if (type != 0x86 || (flags & 1) != 0) {
-                            continue;
-                        }
-                        if ((gain & 0x8000) != 0) {
-                            uint32_t relative = gain & 0x7FFF;
-                            song->ssg_gain = (uint16_t)((VGM_DEFAULT_SSG_GAIN * relative + 0x80) >> 8);
-                        } else {
-                            song->ssg_gain = gain;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
 
     uint32_t relative_loop = read_le32(data + 0x1C);
     uint32_t loop_offset = 0;
@@ -446,8 +396,6 @@ static bool convert_segment(
     uint32_t duration,
     uint32_t rate,
     clock_converter *converter,
-    uint16_t ssg_gain,
-    bool emit_ssg_gain,
     byte_buffer *output,
     uint32_t *frame_count,
     qlvgm_error *error
@@ -478,19 +426,6 @@ static bool convert_segment(
         return false;
     }
     bool ok = true;
-    if (emit_ssg_gain) {
-        ok = converter_emit(
-            converter,
-            &frames[0],
-            VGM_SSG_GAIN_HIGH_REGISTER,
-            (uint8_t)(ssg_gain >> 8)
-        ) && converter_emit(
-            converter,
-            &frames[0],
-            VGM_SSG_GAIN_LOW_REGISTER,
-            (uint8_t)ssg_gain
-        );
-    }
     for (uint32_t i = 0; ok && i < write_count; i += 1) {
         vgm_write write = song->writes[first_write + i];
         uint32_t index = (write.sample - start_sample) / samples_per_frame;
@@ -529,7 +464,6 @@ static bool vgm_convert(
     memset(&converter, 0, sizeof(converter));
     converter.source_clock = song->clock_hz;
     converter.pitch_conversion = pitch_conversion;
-    bool emit_ssg_gain = song->ssg_gain != VGM_DEFAULT_SSG_GAIN;
 
     uint32_t intro_writes = song->write_count;
     uint32_t intro_samples = song->total_samples;
@@ -547,8 +481,6 @@ static bool vgm_convert(
                 intro_samples,
                 rate,
                 &converter,
-                song->ssg_gain,
-                emit_ssg_gain,
                 &converted->stream,
                 &intro_frames,
                 error
@@ -570,8 +502,6 @@ static bool vgm_convert(
                 song->total_samples - song->loop_sample,
                 rate,
                 &converter,
-                song->ssg_gain,
-                emit_ssg_gain && intro_frames == 0,
                 &first_loop,
                 &first_loop_frames,
                 error
@@ -592,8 +522,6 @@ static bool vgm_convert(
                 song->total_samples - song->loop_sample,
                 rate,
                 &steady_converter,
-                song->ssg_gain,
-                false,
                 &steady_loop,
                 &steady_loop_frames,
                 error

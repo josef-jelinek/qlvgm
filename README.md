@@ -109,11 +109,9 @@ clipping. Mixer, volume, patch, key, mode, and envelope-rate bytes retain their
 source values. Envelope timing can therefore differ from the source chip even
 when pitch is preserved.
 
-VGM 1.70 paired-chip volume metadata is retained for the YM2203 SSG. The
-generated stream writes the effective 8.8 fixed-point gain through QSound2
-extension registers `$F1` and `$F0`; QLRun replaces its default half-volume
-SSG balance with that effective gain. Players without this extension safely
-ignore the two otherwise-unused YM2203 register writes.
+VGM paired-chip volume metadata is a software-player mixing hint and is ignored.
+The output retains QSound2's fixed hardware FM/PSG balance and adds no
+emulator-specific mixer register writes.
 
 `--no-pitch-conversion` provides a diagnostic raw-write path. It preserves
 every accepted YM2203 register/value write and its order, without scaling,
