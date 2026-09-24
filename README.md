@@ -2,8 +2,8 @@
 
 QLVGM converts a YM2203 VGM file into a bootable raw QLAY Microdrive image for
 the Sinclair QL and QSound2. The image contains a QLZ1-compressed frame stream,
-a position-independent MC68008 player, and a
-SuperBASIC BOOT program.
+a position-independent MC68008 player, and a SuperBASIC BOOT program. An
+optional raw mode-4 or mode-8 screen dump can remain visible during playback.
 
 The first release deliberately targets the common Furnace-style fixtures
 rather than every command in the VGM specification. It accepts uncompressed
@@ -57,6 +57,8 @@ qlvgm [OPTIONS] INPUT.vgm OUTPUT.mdv
 
 --rate 50|60
 --no-pitch-conversion
+--screen FILE
+--screen-mode 4|8
 --sectors N
 --medium-name NAME
 --random-id N
@@ -74,6 +76,8 @@ For example:
     vgms/CastleSeeYouBackHere.vgm castle_ntsc.mdv
 ./qlvgm --no-pitch-conversion \
     vgms/CastleSeeYouBackHere.vgm castle_raw_pitch.mdv
+./qlvgm --screen vgms/xenon_scr vgms/Xenon.vgm xenon.mdv
+./qlvgm --screen SCREEN --screen-mode 4 INPUT.vgm OUTPUT.mdv
 ~~~
 
 The default is a 255-sector, 50 Hz image. QLVGM derives the medium name from the
@@ -82,11 +86,15 @@ Existing output is rejected unless `--force` is present. Fixed random IDs make
 otherwise identical images reproducible; cartridge files use a stable UTC
 timestamp.
 
-By default, successful conversion prints only a concise creation message.
-`--verbose` adds frame, compression, loaded-player, and target-memory statistics
-and forwards verbose mode to QLASM.
+`--screen` accepts exactly 32,768 bytes of raw QL screen memory. The default is
+mode 8; use `--screen-mode 4` for a mode-4 dump. Supplying `--screen-mode`
+without `--screen` is an error. The screen is stored unchanged as `screen`;
+combinations that do not fit the selected cartridge geometry are rejected. By
+default, successful conversion prints only a concise creation message.
+`--verbose` adds frame, compression, loaded-player, optional-screen, and
+target-memory statistics and forwards verbose mode to QLASM.
 
-The cartridge contains two ordinary type-0 files:
+The cartridge normally contains two ordinary type-0 files:
 
 ~~~text
 BOOT
@@ -94,7 +102,9 @@ qlvgm
 ~~~
 
 BOOT reserves the loaded image plus its decoded stream, loads `mdv1_qlvgm`,
-and calls it. Mount the image as MDV1 and start Microdrive boot (normally F1).
+and calls it. With `--screen`, the cartridge also contains `screen`; BOOT first
+selects the requested mode and loads it at the standard QL display address
+`$20000`. Mount the image as MDV1 and start Microdrive boot (normally F1).
 
 ## Playback model
 

@@ -1,18 +1,27 @@
 typedef struct {
     const char *input_path;
     const char *output_path;
+    const char *screen_path;
     const char *medium_name;
     const char *qlasm;
     const char *player_source;
     uint32_t rate;
     uint32_t sectors;
     uint32_t random_id;
+    uint32_t screen_mode;
     uint32_t test_frames;
     bool pitch_conversion;
     bool random_id_set;
+    bool screen_mode_set;
     bool force;
     bool verbose;
 } image_options;
+
+enum {
+    QLVGM_BOOT_BYTES = 192,
+    QLVGM_SCREEN_ADDRESS = 0x20000,
+    QLVGM_SCREEN_SIZE = 32768
+};
 
 typedef struct {
     char directory[QLVGM_PATH_BYTES];
@@ -133,25 +142,43 @@ static bool write_player_source(
 }
 
 static bool make_boot(
-    char boot[160],
+    char boot[QLVGM_BOOT_BYTES],
     uint32_t *boot_size,
     uint32_t loaded_size,
     uint32_t decoded_size,
+    bool has_screen,
+    uint32_t screen_mode,
     qlvgm_error *error
 ) {
     if (loaded_size > UINT32_MAX - decoded_size) {
         error_set(error, "player memory requirement exceeds 32-bit QDOS range");
         return false;
     }
-    int length = snprintf(
-        boot,
-        160,
-        "100 a=RESPR(%" PRIu32 ")\n"
-        "110 LBYTES \"mdv1_qlvgm\",a\n"
-        "120 CALL a\n",
-        loaded_size + decoded_size
-    );
-    if (length < 0 || length >= 160) {
+    int length;
+    if (has_screen) {
+        length = snprintf(
+            boot,
+            QLVGM_BOOT_BYTES,
+            "100 MODE %u\n"
+            "110 LBYTES \"mdv1_screen\",%u\n"
+            "120 a=RESPR(%" PRIu32 ")\n"
+            "130 LBYTES \"mdv1_qlvgm\",a\n"
+            "140 CALL a\n",
+            screen_mode,
+            QLVGM_SCREEN_ADDRESS,
+            loaded_size + decoded_size
+        );
+    } else {
+        length = snprintf(
+            boot,
+            QLVGM_BOOT_BYTES,
+            "100 a=RESPR(%" PRIu32 ")\n"
+            "110 LBYTES \"mdv1_qlvgm\",a\n"
+            "120 CALL a\n",
+            loaded_size + decoded_size
+        );
+    }
+    if (length < 0 || length >= QLVGM_BOOT_BYTES) {
         error_set(error, "generated BOOT program is too long");
         return false;
     }
@@ -162,6 +189,7 @@ static bool make_boot(
 static bool create_image(
     const converted_song *song,
     const qlz_stream *compressed,
+    const file_data *screen,
     const image_options *options,
     uint32_t *loaded_size,
     qlvgm_error *error
@@ -204,11 +232,19 @@ static bool create_image(
         ok = false;
     }
 
-    char boot[160];
+    char boot[QLVGM_BOOT_BYTES];
     uint32_t boot_size = 0;
     if (ok) {
         *loaded_size = binary.size;
-        ok = make_boot(boot, &boot_size, *loaded_size, compressed->raw_size, error);
+        ok = make_boot(
+            boot,
+            &boot_size,
+            *loaded_size,
+            compressed->raw_size,
+            screen != NULL,
+            options->screen_mode,
+            error
+        );
     }
     if (ok) {
         uint8_t medium_name[QLAY_MEDIUM_NAME_SIZE];
@@ -217,10 +253,19 @@ static bool create_image(
         if (!options->random_id_set) {
             random_id = qlay_random_id();
         }
-        qlay_file files[] = {
+        qlay_file files[QLAY_MAX_FILES] = {
             { .name = "BOOT", .data = (uint8_t *)boot, .size = boot_size },
             { .name = "qlvgm", .data = binary.data, .size = binary.size }
         };
+        uint32_t file_count = 2;
+        if (screen != NULL) {
+            files[file_count] = (qlay_file){
+                .name = "screen",
+                .data = screen->data,
+                .size = screen->size
+            };
+            file_count += 1;
+        }
         ok = qlay_write_image(
             options->output_path,
             options->force,
@@ -228,7 +273,7 @@ static bool create_image(
             medium_name,
             random_id,
             files,
-            sizeof files / sizeof files[0],
+            file_count,
             error
         );
     }

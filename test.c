@@ -643,9 +643,11 @@ static void test_qlay_output(void) {
 
     uint8_t boot[] = { 1, 2, 3 };
     uint8_t player[] = { 4, 5, 6, 7 };
+    uint8_t screen[] = { 8, 9, 10, 11, 12 };
     qlay_file files[] = {
         { .name = "BOOT", .data = boot, .size = sizeof boot },
-        { .name = "qlvgm", .data = player, .size = sizeof player }
+        { .name = "qlvgm", .data = player, .size = sizeof player },
+        { .name = "screen", .data = screen, .size = sizeof screen }
     };
     qlvgm_error error = { { 0 } };
     bool created = qlay_write_image(
@@ -678,20 +680,22 @@ static void test_qlay_output(void) {
         uint8_t *directory_data = directory_sector + QLAY_DATA_OFFSET;
         uint8_t *boot_sector = image + (QLAY_MIN_SECTORS - 2) * QLAY_SECTOR_SIZE;
         uint8_t *player_sector = image + (QLAY_MIN_SECTORS - 3) * QLAY_SECTOR_SIZE;
+        uint8_t *screen_sector = image + (QLAY_MIN_SECTORS - 4) * QLAY_SECTOR_SIZE;
         check(
             map_sector[QLAY_SECTOR_HEADER_OFFSET + 1] == 0 &&
                 directory_sector[QLAY_SECTOR_HEADER_OFFSET + 1] == 1 &&
                 boot_sector[QLAY_SECTOR_HEADER_OFFSET + 1] == 2 &&
-                player_sector[QLAY_SECTOR_HEADER_OFFSET + 1] == 3,
+                player_sector[QLAY_SECTOR_HEADER_OFFSET + 1] == 3 &&
+                screen_sector[QLAY_SECTOR_HEADER_OFFSET + 1] == 4,
             "QLAY physical ordering is map-first descending"
         );
         check(
             map[0] == QLAY_MAP_FILE_ID && map[2] == 0 && map[4] == 1 && map[6] == 2 &&
-                map[QLAY_DATA_SIZE - 1] == 3,
+                map[8] == 3 && map[QLAY_DATA_SIZE - 1] == 4,
             "QLAY allocation map contains the directory and files"
         );
         check(
-            test_read_be32(directory_data) == 3 * QLAY_QDOS_HEADER_SIZE &&
+            test_read_be32(directory_data) == 4 * QLAY_QDOS_HEADER_SIZE &&
                 test_read_be32(directory_data + QLAY_QDOS_HEADER_SIZE) == sizeof boot + QLAY_QDOS_HEADER_SIZE &&
                 test_read_be16(
                     directory_data + QLAY_QDOS_HEADER_SIZE + QLAY_QDOS_NAME_LENGTH_OFFSET
@@ -708,7 +712,8 @@ static void test_qlay_output(void) {
         );
         check(
             memcmp(boot_sector + QLAY_DATA_OFFSET + QLAY_QDOS_HEADER_SIZE, boot, sizeof boot) == 0 &&
-                memcmp(player_sector + QLAY_DATA_OFFSET + QLAY_QDOS_HEADER_SIZE, player, sizeof player) == 0,
+                memcmp(player_sector + QLAY_DATA_OFFSET + QLAY_QDOS_HEADER_SIZE, player, sizeof player) == 0 &&
+                memcmp(screen_sector + QLAY_DATA_OFFSET + QLAY_QDOS_HEADER_SIZE, screen, sizeof screen) == 0,
             "QLAY file blocks contain their payloads"
         );
         uint16_t sector_checksum = (uint16_t)(
@@ -761,10 +766,10 @@ static void test_qlay_output(void) {
             medium_name,
             0x004D,
             files,
-            sizeof files / sizeof files[0],
+            2,
             &error
         ),
-        "QLAY forced output replacement succeeds"
+        "QLAY two-file forced output replacement succeeds"
     );
     qlay_file oversized = { .name = "large", .data = player, .size = QLAY_DATA_SIZE * QLAY_MAX_SECTORS };
     memset(&error, 0, sizeof(error));

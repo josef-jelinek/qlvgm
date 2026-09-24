@@ -7,6 +7,8 @@ static void print_usage(FILE *file) {
         "options:\n"
         "  --rate 50|60        target PAL or NTSC frame rate (default: 50)\n"
         "  --no-pitch-conversion  preserve source YM2203 writes exactly\n"
+        "  --screen FILE       include a 32 KiB QL screen dump\n"
+        "  --screen-mode 4|8   screen display mode (default: 8)\n"
         "  --sectors N         cartridge geometry, 200-255 (default: 255)\n"
         "  --medium-name NAME  cartridge name, 1-10 bytes\n"
         "  --random-id N       cartridge random ID, 0-65535\n"
@@ -72,6 +74,7 @@ static int cli_main(int argc, char **argv) {
     memset(&options, 0, sizeof(options));
     options.rate = 50;
     options.sectors = 255;
+    options.screen_mode = 8;
     options.pitch_conversion = true;
 #ifdef QLVGM_TARGET_TEST_FRAMES
     options.test_frames = QLVGM_TARGET_TEST_FRAMES;
@@ -110,6 +113,30 @@ static int cli_main(int argc, char **argv) {
             continue;
         }
         const char *value = NULL;
+        if (!options_done
+            && (strcmp(argument, "--screen") == 0 || strncmp(argument, "--screen=", 9) == 0)) {
+            value = option_value(argc, argv, &i, argument, "--screen", &error);
+            if (value == NULL) {
+                break;
+            }
+            options.screen_path = value;
+            continue;
+        }
+        if (!options_done
+            && (strcmp(argument, "--screen-mode") == 0
+                || strncmp(argument, "--screen-mode=", 14) == 0)) {
+            value = option_value(argc, argv, &i, argument, "--screen-mode", &error);
+            if (value == NULL
+                || !parse_u32(value, 4, 8, &options.screen_mode, "screen mode", &error)
+                || (options.screen_mode != 4 && options.screen_mode != 8)) {
+                if (error.text[0] == '\0') {
+                    error_set(&error, "screen mode must be 4 or 8");
+                }
+                break;
+            }
+            options.screen_mode_set = true;
+            continue;
+        }
         if (!options_done
             && (strcmp(argument, "--rate") == 0 || strncmp(argument, "--rate=", 7) == 0)) {
             value = option_value(argc, argv, &i, argument, "--rate", &error);
@@ -169,6 +196,9 @@ static int cli_main(int argc, char **argv) {
         operands[operand_count] = argument;
         operand_count += 1;
     }
+    if (error.text[0] == '\0' && options.screen_mode_set && options.screen_path == NULL) {
+        error_set(&error, "--screen-mode requires --screen");
+    }
     if (error.text[0] == '\0' && operand_count != 2) {
         error_set(&error, "INPUT.vgm and OUTPUT.mdv are required");
     }
@@ -197,8 +227,30 @@ static int cli_main(int argc, char **argv) {
         options.player_source = player_path;
     }
 
+    file_data screen = { 0 };
+    const file_data *screen_file = NULL;
+    if (options.screen_path != NULL) {
+        if (!read_file(options.screen_path, &screen, &error)) {
+            fprintf(stderr, "qlvgm: %s\n", error.text);
+            return 1;
+        }
+        if (screen.size != QLVGM_SCREEN_SIZE) {
+            fprintf(
+                stderr,
+                "qlvgm: screen dump must contain exactly %u bytes: %s contains %" PRIu32 "\n",
+                QLVGM_SCREEN_SIZE,
+                options.screen_path,
+                screen.size
+            );
+            free(screen.data);
+            return 1;
+        }
+        screen_file = &screen;
+    }
+
     file_data input;
     if (!read_file(options.input_path, &input, &error)) {
+        free(screen.data);
         fprintf(stderr, "qlvgm: %s\n", error.text);
         return 1;
     }
@@ -207,6 +259,7 @@ static int cli_main(int argc, char **argv) {
     free(input.data);
     if (!parsed) {
         vgm_song_free(&song);
+        free(screen.data);
         fprintf(stderr, "qlvgm: %s\n", error.text);
         return 1;
     }
@@ -220,6 +273,7 @@ static int cli_main(int argc, char **argv) {
             &error
         )) {
         vgm_song_free(&song);
+        free(screen.data);
         fprintf(stderr, "qlvgm: %s\n", error.text);
         return 1;
     }
@@ -227,12 +281,20 @@ static int cli_main(int argc, char **argv) {
     if (!qlz_stream_create(&converted.stream, &compressed, &error)) {
         converted_song_free(&converted);
         vgm_song_free(&song);
+        free(screen.data);
         fprintf(stderr, "qlvgm: %s\n", error.text);
         return 1;
     }
 
     uint32_t loaded_size = 0;
-    bool created = create_image(&converted, &compressed, &options, &loaded_size, &error);
+    bool created = create_image(
+        &converted,
+        &compressed,
+        screen_file,
+        &options,
+        &loaded_size,
+        &error
+    );
     if (created) {
         printf("created %s", options.output_path);
         if (options.verbose) {
@@ -240,14 +302,17 @@ static int cli_main(int argc, char **argv) {
             printf(
                 ": %" PRIu32 " frames at %" PRIu32 " Hz, "
                 "%" PRIu32 " decoded -> %" PRIu32 " QLZ bytes, "
-                "%" PRIu32 " loaded bytes, %" PRIu64 " target bytes",
+                "%" PRIu32 " loaded bytes",
                 converted.frame_count,
                 options.rate,
                 compressed.raw_size,
                 compressed.data.size,
-                loaded_size,
-                target_memory
+                loaded_size
             );
+            if (screen_file != NULL) {
+                printf(", %u screen bytes", QLVGM_SCREEN_SIZE);
+            }
+            printf(", %" PRIu64 " target bytes", target_memory);
         }
         fputc('\n', stdout);
         if (converted.clipped_values != 0) {
@@ -261,6 +326,7 @@ static int cli_main(int argc, char **argv) {
     qlz_stream_free(&compressed);
     converted_song_free(&converted);
     vgm_song_free(&song);
+    free(screen.data);
     if (!created) {
         fprintf(stderr, "qlvgm: %s\n", error.text);
         return 1;
